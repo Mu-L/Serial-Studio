@@ -1,6 +1,6 @@
-#--------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
 # Workflow configuration
-#--------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
 
 name: Deploy
 on:
@@ -12,12 +12,12 @@ on:
     paths-ignore:     # File-patterns to ignore
     - '**.md'         # Ignore changes to *.md files
 
-#--------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
 # Define application name & version
-#--------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
 
 env:
-  VERSION: "2.0.0"
+  VERSION: "2.1.0"
   EXECUTABLE: "SerialStudio"
   APPLICATION: "Serial Studio"
   UNIXNAME: "serial-studio"
@@ -26,14 +26,14 @@ env:
   QML_DIR_WIN: "assets\\qml"
   PUBLISHER: "Alex Spataru"
   REPO_DIR: "/home/runner/work/Serial-Studio"
-  QT_VERSION: 6.6.2
-  QT_MODULES: qtserialport qtconnectivity qt5compat qtpositioning qtlocation
+  QT_VERSION: 6.7.0
+  QT_MODULES: qtserialport qtconnectivity qtpositioning qtlocation
   QMAKE: qmake6
   CORES: 16
 
-#--------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
 # Workflow jobs (GNU/Linux, macOS & Windows)
-#--------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
 
 jobs:
   #
@@ -43,7 +43,6 @@ jobs:
     runs-on: ubuntu-20.04
     name: '🐧 Ubuntu 20.04'
     steps:
-
     - name: '🧰 Checkout'
       uses: actions/checkout@v4
       with:
@@ -60,12 +59,15 @@ jobs:
     - name: '⚙️ Install dependencies'
       run: |
         sudo apt-get update
-        sudo apt-get install libgl1-mesa-dev libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libzstd-dev libxcb-image0-dev libxcb-util0-dev libxcb-cursor-dev
+        sudo apt-get install libgl1-mesa-dev libxkbcommon-x11-0 libxcb-icccm4 \
+                             libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
+                             libxcb-xinerama0 libzstd-dev libxcb-image0-dev \
+                             libxcb-util0-dev libxcb-cursor-dev
 
     - name: '🚧 Compile application'
       run: |
-          ${{env.QMAKE}} ${{env.QMAKE_PROJECT}} CONFIG+=release PREFIX=/usr
-          make -j${{env.CORES}}
+        ${{env.QMAKE}} ${{env.QMAKE_PROJECT}} CONFIG+=release PREFIX=/usr
+        make -j${{env.CORES}}
 
     - name: '⚙️ Install linuxdeploy'
       run: |
@@ -85,19 +87,19 @@ jobs:
         mv *.AppImage ${{env.EXECUTABLE}}-${{env.VERSION}}-Linux.AppImage
 
     - name: '📤 Upload artifact: AppImage'
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: ${{env.EXECUTABLE}}-${{env.VERSION}}-Linux.AppImage
         path: ${{env.EXECUTABLE}}-${{env.VERSION}}-Linux.AppImage
 
   #
-  # macOS build
+  # macOS build (ARM64)
   #
-  build-mac:
+  build-mac-arm:
     runs-on: macos-latest
-    name: '🍎 macOS'
+    name: '🍎 macOS (ARM64)'
+        
     steps:
-
     - name: '🧰 Checkout'
       uses: actions/checkout@v4
       with:
@@ -109,24 +111,130 @@ jobs:
         version: ${{env.QT_VERSION}}
         modules: ${{env.QT_MODULES}}
         cache: true
+        arch: clang_64
         install-deps: 'true'
+
+    - name: '⚙️ Install Node'
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
 
     - name: '🚧 Compile application'
       run: |
-           ${{env.QMAKE}} ${{env.QMAKE_PROJECT}} CONFIG+=release PREFIX=/usr
-           make -j${{env.CORES}}
+        ${{env.QMAKE}} ${{env.QMAKE_PROJECT}} CONFIG+=release
+        make -j${{env.CORES}}
 
-    - name: '📦 Package application (macdeployqt and zipfile)'
+    - name: '📦 Package application'
       run: |
-        macdeployqt ${{env.EXECUTABLE}}.app -qmldir="${{env.QML_DIR_NIX}}"
+        macdeployqt ${{env.EXECUTABLE}}.app -appstore-compliant -qmldir="${{env.QML_DIR_NIX}}"
         mv "${{env.EXECUTABLE}}.app" "${{env.APPLICATION}}.app"
-        ditto -c -k --sequesterRsrc --keepParent "${{env.APPLICATION}}.app" ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS.zip
 
-    - name: '📤 Upload artifact: ZIP'
-      uses: actions/upload-artifact@v2
+    - name: '🪪 Import Code Signing Certificate'
+      uses: apple-actions/import-codesign-certs@v2
       with:
-        name: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS.zip
-        path: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS.zip
+        p12-file-base64: ${{secrets.CERTIFICATES_P12}}
+        p12-password: ${{secrets.CERTIFICATES_P12_PASSWORD}}
+
+    - name: '✍🏻 Sign Application'
+      run: codesign --force --deep --options runtime --sign "${{secrets.DEVELOPER_ID}}" "${{env.APPLICATION}}.app"
+
+    - name: '💽 Create nice DMG'
+      run: |
+        npm install --global create-dmg
+        rm LICENSE.md
+        create-dmg "${{env.APPLICATION}}.app" --dmg-title="${{env.APPLICATION}}"
+        mv "${{env.APPLICATION}} ${{env.VERSION}}.dmg" "${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-arm64.dmg"
+
+    - name: '📋 Notarize'
+      uses: alex-spataru/xcode-notarize@v2
+      with:
+        product-path: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-Arm64.dmg
+        appstore-connect-username: ${{secrets.NOTARIZATION_USERNAME}}
+        appstore-connect-teamid: ${{secrets.NOTARIZATION_TEAMID}}
+        appstore-connect-password: ${{secrets.NOTARIZATION_PASSWORD}}
+
+    - name: '📌 Staple'
+      uses: BoundfoxStudios/action-xcode-staple@v1
+      with:
+        product-path: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-arm64.dmg
+
+    - name: '📤 Upload artifact: DMG'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-arm64.dmg
+        path: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-arm64.dmg
+
+  
+  #
+  # macOS build (Intel)
+  #
+  build-mac-intel:        
+    runs-on: macos-12
+    name: '🍎 macOS (Intel)'
+    steps:
+    - name: '🧰 Checkout'
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: '⚙️ Install Qt'
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: ${{env.QT_VERSION}}
+        modules: ${{env.QT_MODULES}}
+        cache: true
+        arch: clang_64
+        install-deps: 'true'
+
+    - name: '⚙️ Install Node'
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: '🚧 Compile application'
+      run: |
+        ${{env.QMAKE}} ${{env.QMAKE_PROJECT}} CONFIG+=release
+        make -j${{env.CORES}}
+
+    - name: '📦 Package application'
+      run: |
+        macdeployqt ${{env.EXECUTABLE}}.app -appstore-compliant -qmldir="${{env.QML_DIR_NIX}}"
+        mv "${{env.EXECUTABLE}}.app" "${{env.APPLICATION}}.app"
+
+    - name: '🪪 Import Code Signing Certificate'
+      uses: apple-actions/import-codesign-certs@v2
+      with:
+        p12-file-base64: ${{secrets.CERTIFICATES_P12}}
+        p12-password: ${{secrets.CERTIFICATES_P12_PASSWORD}}
+
+    - name: '✍🏻 Sign Application'
+      run: codesign --force --deep --options runtime --sign "${{secrets.DEVELOPER_ID}}" "${{env.APPLICATION}}.app"
+
+    - name: '💽 Create nice DMG'
+      run: |
+        npm install --global create-dmg
+        rm LICENSE.md
+        create-dmg "${{env.APPLICATION}}.app" --dmg-title="${{env.APPLICATION}}"
+        mv "${{env.APPLICATION}} ${{env.VERSION}}.dmg" "${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-x86_64.dmg"
+
+    - name: '📋 Notarize'
+      uses: alex-spataru/xcode-notarize@v2
+      with:
+        product-path: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-x86_64.dmg
+        appstore-connect-username: ${{secrets.NOTARIZATION_USERNAME}}
+        appstore-connect-teamid: ${{secrets.NOTARIZATION_TEAMID}}
+        appstore-connect-password: ${{secrets.NOTARIZATION_PASSWORD}}
+
+    - name: '📌 Staple'
+      uses: BoundfoxStudios/action-xcode-staple@v1
+      with:
+        product-path: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-x86_64.dmg
+
+    - name: '📤 Upload artifact: DMG'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-x86_64.dmg
+        path: ${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-x86_64.dmg
 
   #
   # Windows build
@@ -135,7 +243,6 @@ jobs:
     runs-on: windows-latest
     name: '🧊 Windows'
     steps:
-
     - name: '🧰 Checkout'
       uses: actions/checkout@v4
       with:
@@ -178,7 +285,7 @@ jobs:
         Compress-Archive -Path "${{env.EXECUTABLE}}-${{env.VERSION}}-Windows" -DestinationPath "${{env.EXECUTABLE}}-${{env.VERSION}}-Windows.zip"
 
     - name: '📦 Make NSIS installer'
-      uses: joncloud/makensis-action@v3.6
+      uses: joncloud/makensis-action@v4.1
       with:
         script-file: deploy/windows/nsis/setup.nsi
 
@@ -194,13 +301,13 @@ jobs:
         ren *.exe ${{env.EXECUTABLE}}-${{env.VERSION}}-Windows.exe
 
     - name: '📤 Upload artifact: NSIS installer'
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: ${{env.EXECUTABLE}}-${{env.VERSION}}-Windows.exe
         path: deploy/windows/nsis/${{env.EXECUTABLE}}-${{env.VERSION}}-Windows.exe
 
     - name: '📤 Upload artifact: Portable application'
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: ${{env.EXECUTABLE}}-${{env.VERSION}}-Windows.zip
         path: ${{env.EXECUTABLE}}-${{env.VERSION}}-Windows.zip
@@ -208,99 +315,101 @@ jobs:
   #
   # Windows MSYS2 build
   #
-  msys2-makepkg:
-    if: ${{false}}
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { icon: '🟪', msystem: MINGW64, arch: x86_64 }
-          - { icon: '🟦', msystem: MINGW32, arch: i686   }
-    name:  ${{ matrix.icon }} ${{ matrix.msystem }} | ${{ matrix.arch }} | makepkg
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
+  # msys2-makepkg:
+  #   if: ${{false}}
+  #   runs-on: windows-latest
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - { icon: '🟪', msystem: MINGW64, arch: x86_64 }
+  #         - { icon: '🟦', msystem: MINGW32, arch: i686   }
+  #   name:  ${{ matrix.icon }} ${{ matrix.msystem }} | ${{ matrix.arch }} | makepkg
+  #   defaults:
+  #     run:
+  #       shell: msys2 {0}
+  #   steps:
+  # 
+  #   - run: git config --global core.autocrlf input
+  #     shell: bash
+  # 
+  #   - name: '🧰 Checkout'
+  #     uses: actions/checkout@v4
+  #     with:
+  #       fetch-depth: 0
+  #       submodules: recursive
+  # 
+  #   - name: '${{ matrix.icon }} Setup MSYS2'
+  #     uses: msys2/setup-msys2@v2
+  #     with:
+  #       msystem: ${{ matrix.msystem }}
+  #       update: true
+  #       install: >
+  #         base-devel
+  #         mingw-w64-${{ matrix.arch }}-toolchain
+  # 
+  #   - name: '🚧 Build'
+  #     run: |
+  #       cd msys2
+  #       tries=0
+  #       # Try building three times due to the arbitrary 'Bad address' error
+  #       while [ $tries -lt 3 ]; do
+  #         makepkg-mingw --noconfirm --noprogressbar -sCLf && break || tries=$((tries+1))
+  #       done
+  # 
+  #     env:
+  #       MINGW_INSTALLS: ${{ matrix.msystem }}
+  # 
+  #   - name: '📤 Upload artifact: MSYS2 ${{ matrix.arch }} package'
+  #     uses: actions/upload-artifact@v4
+  #     with:
+  #       name: msys2-pkgs
+  #       path: msys2/*.zst
 
-    - run: git config --global core.autocrlf input
-      shell: bash
-
-    - name: '🧰 Checkout'
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
-        submodules: recursive
-
-    - name: '${{ matrix.icon }} Setup MSYS2'
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: ${{ matrix.msystem }}
-        update: true
-        install: >
-          base-devel
-          mingw-w64-${{ matrix.arch }}-toolchain
-
-    - name: '🚧 Build'
-      run: |
-        cd msys2
-        tries=0
-        # Try building three times due to the arbitrary 'Bad address' error
-        while [ $tries -lt 3 ]; do
-          makepkg-mingw --noconfirm --noprogressbar -sCLf && break || tries=$((tries+1))
-        done
-
-      env:
-        MINGW_INSTALLS: ${{ matrix.msystem }}
-
-    - name: '📤 Upload artifact: MSYS2 ${{ matrix.arch }} package'
-      uses: actions/upload-artifact@v2
-      with:
-        name: msys2-pkgs
-        path: msys2/*.zst
-
+  #
   # Test Windows MSYS2 packages
-  msys2-test:
-    if: ${{false}}
-    needs: msys2-makepkg
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { icon: '🟪', msystem: MINGW64, arch: x86_64 }
-          - { icon: '🟦', msystem: MINGW32, arch: i686   }
-    name: ${{ matrix.icon }} ${{ matrix.msystem }} | ${{ matrix.arch }} | Test
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-
-    - name: '${{ matrix.icon }} Setup MSYS2'
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: ${{ matrix.msystem }}
-        update: true
-        install: >
-          tree
-          tar
-          zstd
-
-    - name: '📥 Download artifacts: MSYS2 packages'
-      uses: actions/download-artifact@v2
-      with:
-        name: msys2-pkgs
-
-    - name: 'Install MSYS2 package'
-      run: |
-        pacman -U --noconfirm --noprogressbar *${{ matrix.arch }}*.zst
-
-    - name: 'List contents of package'
-      run: |
-        mkdir tmp
-        cd tmp
-        /usr/bin/tar xf ../*${{ matrix.arch }}*.zst
-        tree ${{ matrix.msystem }}
+  #
+  #  msys2-test:
+  #   if: ${{false}}
+  #   needs: msys2-makepkg
+  #   runs-on: windows-latest
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - { icon: '🟪', msystem: MINGW64, arch: x86_64 }
+  #         - { icon: '🟦', msystem: MINGW32, arch: i686   }
+  #   name: ${{ matrix.icon }} ${{ matrix.msystem }} | ${{ matrix.arch }} | Test
+  #   defaults:
+  #     run:
+  #       shell: msys2 {0}
+  #   steps:
+  # 
+  #   - name: '${{ matrix.icon }} Setup MSYS2'
+  #     uses: msys2/setup-msys2@v2
+  #     with:
+  #       msystem: ${{ matrix.msystem }}
+  #       update: true
+  #       install: >
+  #         tree
+  #         tar
+  #         zstd
+  # 
+  #   - name: '📥 Download artifacts: MSYS2 packages'
+  #     uses: actions/download-artifact@v2
+  #     with:
+  #       name: msys2-pkgs
+  # 
+  #   - name: 'Install MSYS2 package'
+  #     run: |
+  #       pacman -U --noconfirm --noprogressbar *${{ matrix.arch }}*.zst
+  # 
+  #   - name: 'List contents of package'
+  #     run: |
+  #       mkdir tmp
+  #       cd tmp
+  #       /usr/bin/tar xf ../*${{ matrix.arch }}*.zst
+  #       tree ${{ matrix.msystem }}
 
   #
   # Upload continuous build
@@ -309,21 +418,26 @@ jobs:
       name: '🗂 Create release and upload artifacts'
       needs:
         - build-linux
-        - build-mac
+        - build-mac-arm
+        - build-mac-intel
         - build-windows
-      runs-on: ubuntu-20.04
+        
+      runs-on: ubuntu-latest
       steps:
       - name: '📥 Download artifacts'
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
       - name: '🗂 Inspect directory after downloading artifacts'
         run: ls -alFR
       - name: '🚀 Create release and upload artifacts'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+            sudo apt-get update
+            sudo apt-get install libfuse2
             wget -q https://github.com/TheAssassin/pyuploadtool/releases/download/continuous/pyuploadtool-x86_64.AppImage
             chmod +x pyuploadtool-x86_64.AppImage
             ./pyuploadtool-x86_64.AppImage **/${{env.EXECUTABLE}}-${{env.VERSION}}-Linux.AppImage
-            ./pyuploadtool-x86_64.AppImage **/${{env.EXECUTABLE}}-${{env.VERSION}}-macOS.zip
+            ./pyuploadtool-x86_64.AppImage **/${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-arm64.dmg
+            ./pyuploadtool-x86_64.AppImage **/${{env.EXECUTABLE}}-${{env.VERSION}}-macOS-x86_64.dmg
             ./pyuploadtool-x86_64.AppImage **/${{env.EXECUTABLE}}-${{env.VERSION}}-Windows.exe
             ./pyuploadtool-x86_64.AppImage **/${{env.EXECUTABLE}}-${{env.VERSION}}-Windows.zip
